@@ -14,8 +14,10 @@ import {
   urlDecodeB64
 } from '../src/utils';
 import { DEFAULT_AUTHORIZE_TIMEOUT_IN_SECONDS } from '../src/constants';
+import { InternalError } from '../src/errors';
 
 (<any>global).TextEncoder = TextEncoder;
+const TIMEOUT_ERROR = { error: 'timeout', error_description: 'Timeout' };
 
 describe('utils', () => {
   describe('getUniqueScopes', () => {
@@ -249,7 +251,6 @@ describe('utils', () => {
     });
   });
   describe('runPopup', () => {
-    const TIMEOUT_ERROR = { error: 'timeout', error_description: 'Timeout' };
     const setup = customMessage => {
       const popup = {
         location: { href: '' },
@@ -352,11 +353,11 @@ describe('utils', () => {
     });
   });
   describe('runIframe', () => {
-    const TIMEOUT_ERROR = { error: 'timeout', error_description: 'Timeout' };
     const setup = customMessage => {
       const iframe = {
         setAttribute: jest.fn(),
-        style: { display: '' }
+        style: { display: '' },
+        id: ''
       };
       const url = 'https://authorize.com';
       const origin =
@@ -370,6 +371,13 @@ describe('utils', () => {
         expect(type).toBe('iframe');
         return iframe;
       });
+      window.document.getElementById = <any>jest
+        .fn()
+        .mockImplementationOnce(id => undefined)
+        .mockImplementationOnce(id => {
+          expect(id).toBe('a0-spajs-iframe');
+          return iframe;
+        });
       window.document.body.appendChild = jest.fn();
       window.document.body.removeChild = jest.fn();
       return { iframe, url, origin };
@@ -387,7 +395,6 @@ describe('utils', () => {
       const { iframe, url } = setup(message);
       await runIframe(url, origin);
 
-      expect(message.source.close).toHaveBeenCalled();
       expect(window.document.body.appendChild).toHaveBeenCalledWith(iframe);
       expect(window.document.body.removeChild).toHaveBeenCalledWith(iframe);
       expect(iframe.setAttribute.mock.calls).toMatchObject([
@@ -396,6 +403,29 @@ describe('utils', () => {
         ['src', url]
       ]);
       expect(iframe.style.display).toBe('none');
+      expect(iframe.id).toBe('a0-spajs-iframe');
+    });
+    it('throws an error when the iframe already exists', async () => {
+      const origin = 'https://origin.com';
+      const { iframe, url } = setup('');
+
+      //the mock returns undefined in the first time
+      //and an object in the second time, so call it
+      //once here so when the method runs, it will
+      //return the object and throw
+      window.document.getElementById('foobar');
+
+      try {
+        await runIframe(url, origin);
+      } catch (error) {
+        expect(error).toBeInstanceOf(InternalError);
+        expect(error.error_description).toBe(
+          "`getTokenSilently` can only be called once at a time. Check your code to make sure you're not calling it multiple times."
+        );
+        expect(window.document.body.appendChild).not.toHaveBeenCalledWith(
+          iframe
+        );
+      }
     });
     describe('with invalid messages', () => {
       [
@@ -439,7 +469,6 @@ describe('utils', () => {
       await expect(runIframe(url, origin)).resolves.toMatchObject(
         message.data.response
       );
-      expect(message.source.close).toHaveBeenCalled();
       expect(window.document.body.removeChild).toHaveBeenCalledWith(iframe);
     });
     it('returns authorization error message', async () => {
@@ -456,7 +485,6 @@ describe('utils', () => {
       await expect(runIframe(url, origin)).rejects.toMatchObject(
         message.data.response
       );
-      expect(message.source.close).toHaveBeenCalled();
       expect(window.document.body.removeChild).toHaveBeenCalledWith(iframe);
     });
     it('times out after 60s', async () => {

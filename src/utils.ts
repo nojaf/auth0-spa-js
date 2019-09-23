@@ -1,10 +1,12 @@
 import fetch from 'unfetch';
 
 import { DEFAULT_AUTHORIZE_TIMEOUT_IN_SECONDS } from './constants';
+import { InternalError } from './errors';
+
+const TIMEOUT_ERROR = { error: 'timeout', error_description: 'Timeout' };
 
 const dedupe = arr => arr.filter((x, i) => arr.indexOf(x) === i);
 
-const TIMEOUT_ERROR = { error: 'timeout', error_description: 'Timeout' };
 export const getUniqueScopes = (...scopes: string[]) => {
   const scopeString = scopes.filter(Boolean).join();
   return dedupe(scopeString.replace(/\s/g, ',').split(','))
@@ -27,11 +29,18 @@ export const parseQueryResult = (queryString: string) => {
 };
 
 export const runIframe = (authorizeUrl: string, eventOrigin: string) => {
+  const IFRAME_ID = 'a0-spajs-iframe';
+  if (document.getElementById(IFRAME_ID)) {
+    throw new InternalError(
+      "`getTokenSilently` can only be called once at a time. Check your code to make sure you're not calling it multiple times."
+    );
+  }
   return new Promise<AuthenticationResult>((res, rej) => {
     var iframe = window.document.createElement('iframe');
     iframe.setAttribute('width', '0');
     iframe.setAttribute('height', '0');
     iframe.style.display = 'none';
+    iframe.id = IFRAME_ID;
 
     const timeoutSetTimeoutId = setTimeout(() => {
       rej(TIMEOUT_ERROR);
@@ -41,11 +50,14 @@ export const runIframe = (authorizeUrl: string, eventOrigin: string) => {
     const iframeEventHandler = function(e: MessageEvent) {
       if (e.origin != eventOrigin) return;
       if (!e.data || e.data.type !== 'authorization_response') return;
-      (<any>e.source).close();
+
       e.data.response.error ? rej(e.data.response) : res(e.data.response);
       clearTimeout(timeoutSetTimeoutId);
       window.removeEventListener('message', iframeEventHandler, false);
-      window.document.body.removeChild(iframe);
+
+      try {
+        window.document.body.removeChild(document.getElementById(IFRAME_ID));
+      } catch (error) {}
     };
     window.addEventListener('message', iframeEventHandler, false);
     window.document.body.appendChild(iframe);
